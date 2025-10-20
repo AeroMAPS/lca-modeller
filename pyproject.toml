@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "lca-modeller"
-version = "0.0.0"
+version = "0.1.1-beta"  # This version number is overwritten by GitHub packaging workflow but setting this version here will allow installation of CS25 models in development mode
 description = "Python library to build parametric LCA models from a configuration file. "
 authors = [
     "Félix POLLET <felix.pollet@isae-supaero.fr>",

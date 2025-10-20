@@ -1,5 +1,11 @@
 🚀 LCA-Modeller
-----------------
+===============================================================
+
+[![image](https://img.shields.io/pypi/v/lca-modeller.svg)](https://pypi.python.org/pypi/lca-modeller)
+[![image](https://img.shields.io/pypi/pyversions/lca-modeller.svg)](https://pypi.python.org/pypi/lca-modeller)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
+
 *LCA-Modeller* offers a streamlined interface to facilitate the creation of **parametric LCA models** with **prospective capabilities**. It builds on the open-source libraries [*lca-algebraic*](https://lca-algebraic.readthedocs.io/) and [*premise*](https://premise.readthedocs.io/), so having a basic understanding of these tools is recommended.
 
 The core functionality of *LCA-Modeller* revolves around reading a user-provided configuration file that defines the LCA model. From this configuration file, *LCA-Modeller* generates a parametric LCA model with *lca-algebraic*, which can then be evaluated for any parameter values using *lca-algebraic*'s built-in functions.
@@ -11,15 +17,14 @@ Additional features include the definition of custom impact assessment methods a
 
 📦 Installation
 ----------------
-**No pip installation is provided at the moment.** <br>
 To install *LCA-Modeller*, setup a separate conda environment:
 ```bash
 conda create -n lca_modeller python==3.10
 conda activate lca_modeller
 ```
-And git clone the repository. Then, install *LCA-Modeller* using [poetry](https://python-poetry.org/docs/) by setting the current directory to the root of the repository and running:
+And pip install the package:
 ```bash
-poetry install
+pip install lca-modeller
 ```
 
 A tutorial notebook is provided in the `notebooks` directory to help you get started with *LCA-Modeller*.
