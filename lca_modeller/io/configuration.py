@@ -50,6 +50,7 @@ KEY_ATTR_NAME = 'attribute'
 KEY_ATTR_VALUE = 'value'
 EXCHANGE_DEFAULT_VALUE = 1.0  # default value for the exchange between two activities
 SWITCH_DEFAULT_VALUE = False  # default foreground activity type (True: it is a switch activity; False: it is a regular activity)
+FLOAT_PARAM_DEFAULT_VALUE = 0.0  # default value for float parameters
 KEY_METADATA = 'parameters_metadata'
 KEY_METHODS = 'methods'
 KEY_CUSTOM_METHODS = 'custom_methods'
@@ -126,8 +127,8 @@ def _parse_exchange(table: dict, act: ActivityExtended = None, params_meta_dict:
         if param not in all_params():  # create the parameter if it doesn't exist
             # Get the metadata of the parameter if provided in specific section of the configuration file
             param_meta = params_meta_dict.get(param.name, {})
-            default = param_meta.get('default', 1.0)
-            min_val = param_meta.get('min', 1.0)
+            default = param_meta.get('default', FLOAT_PARAM_DEFAULT_VALUE)
+            min_val = param_meta.get('min', 0.0)
             max_val = param_meta.get('max', 1.0)
             unit = param_meta.get('unit', None)
             description = param_meta.get('description', None)
@@ -140,11 +141,11 @@ def _parse_exchange(table: dict, act: ActivityExtended = None, params_meta_dict:
             agb.newFloatParam(
                 param.name,  # name of the parameter
                 default=default,  # default value
-                min=min_val,
-                max=max_val,
+                min=min_val,  # for sensitivity analysis runs
+                max=max_val,  # for sensitivity analysis runs
                 unit=unit,
                 description=description,
-                distrib=distrib,
+                distrib=distrib,  # distribution type for uncertainty analysis runs
                 formula=formula,
                 label=label,
                 group=group,
