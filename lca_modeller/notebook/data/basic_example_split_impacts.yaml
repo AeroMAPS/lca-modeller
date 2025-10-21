@@ -13,25 +13,28 @@ ecoinvent:
 model:
 
     food:
-        custom_attributes:
-            - attribute: 'subsystem'
-              value: 'food'
+        tags:  # specify tag to ventilate impacts by life cycle phase, system, or any other attribute
+            - subsystem: 'food'  # compute_impacts(..., axis='subsystem') will provide contribution of 'food' to total score
+        # (note: 'tags' replaces 'custom_attributes' from older version of lca-modeller)
               
         amount: 2 * a  # specify amount of food as a float or a formula
 
         cheese:
             amount: 3 * b + c
             name: 'market for cheese, from cow milk, fresh, unripened'
+            tags:
+                - foodtype: 'cheese'
             
         carrots:
             name: 'carrot production'
             loc: 'NL'  # specify location
-            # default amount value is 1.0
+            tags:
+                - foodtype: 'carrots'
             
     drink:
-        custom_attributes:
-            - attribute: 'subsystem'
-              value: 'drink'
+        tags:
+            - subsystem: 'drink'  # compute_impacts(..., axis='subsystem') will provide contribution of 'drink' to total score
+            - foodtype: 'soybean'
               
         name: 'soybean beverage production'
         loc: 'RoW'
@@ -39,6 +42,7 @@ model:
         amount: d / a + 1.0
         
     methane:
+        # Untagged -> contribution will appear as 'others' in compute_impacts(..., axis='subsystem')
         amount: 1e-6
         name: 'methane, fossil'
         categories:
