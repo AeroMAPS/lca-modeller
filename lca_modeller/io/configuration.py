@@ -48,6 +48,7 @@ KEY_UNIT = 'unit'
 KEY_CUSTOM_ATTR = 'custom_attributes'
 KEY_ATTR_NAME = 'attribute'
 KEY_ATTR_VALUE = 'value'
+KEY_TAGS = 'tags'
 EXCHANGE_DEFAULT_VALUE = 1.0  # default value for the exchange between two activities
 SWITCH_DEFAULT_VALUE = False  # default foreground activity type (True: it is a switch activity; False: it is a regular activity)
 FLOAT_PARAM_DEFAULT_VALUE = 0.0  # default value for float parameters
@@ -732,6 +733,7 @@ class LCAProblemConfigurator:
             categories = table.get(KEY_CATEGORIES, None)
             exchange = _parse_exchange(table, params_meta_dict=self.params_meta_dict)
             custom_attributes = table.get(KEY_CUSTOM_ATTR, [])
+            tags = table.get(KEY_TAGS, [])
             update_exchanges = table.get(KEY_UPDATE_ACT, [])
             delete_exchanges = table.get(KEY_DELETE, [])
             add_exchanges = table.get(KEY_ADD, [])
@@ -739,7 +741,7 @@ class LCAProblemConfigurator:
             # Biosphere flow
             if categories:
                 sub_act = self._get_bio_activity(name, loc, categories, unit)
-                if custom_attributes:
+                if custom_attributes or tags:
                     _LOGGER.warning(
                         f"Custom attributes cannot apply directly to biosphere flows ({name}). Creating intermediate activity.")
                     sub_act = agb.newActivity(
@@ -753,9 +755,12 @@ class LCAProblemConfigurator:
                         if "formula" in ex:
                             del ex["formula"]
                             ex.save()
+                    # Both custom attributes and tags can be used by the user e.g. to split impacts by phase or system
                     for attr in custom_attributes:
                         attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                         sub_act.updateMeta(**attr_dict)
+                    for tag in tags:
+                        sub_act.updateMeta(**tag)
 
             # Technosphere activity
             else:
@@ -765,6 +770,9 @@ class LCAProblemConfigurator:
                 for attr in custom_attributes:
                     attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                     sub_act.updateMeta(**attr_dict)
+                # Add tags
+                for tag in tags:
+                    sub_act.updateMeta(**tag)
                 # Add exchanges if defined in the configuration file
                 if add_exchanges:
                     act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
@@ -796,6 +804,7 @@ class LCAProblemConfigurator:
                     categories = value.get(KEY_CATEGORIES, None)
                     exchange = _parse_exchange(value, params_meta_dict=self.params_meta_dict)
                     custom_attributes = value.get(KEY_CUSTOM_ATTR, [])
+                    tags = value.get(KEY_TAGS, [])
                     update_exchanges = value.get(KEY_UPDATE_ACT, [])
                     delete_exchanges = value.get(KEY_DELETE, [])
                     add_exchanges = value.get(KEY_ADD, [])
@@ -803,7 +812,7 @@ class LCAProblemConfigurator:
                     # Biosphere flow
                     if categories:
                         sub_act = self._get_bio_activity(name, loc, categories, unit)
-                        if custom_attributes:
+                        if custom_attributes or tags:
                             _LOGGER.warning(f"Custom attributes cannot apply directly to biosphere flows ({key}). Creating intermediate activity.")
                             sub_act = agb.newActivity(
                                 db_name=USER_DB,
@@ -819,6 +828,8 @@ class LCAProblemConfigurator:
                             for attr in custom_attributes:
                                 attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                                 sub_act.updateMeta(**attr_dict)
+                            for tag in tags:
+                                sub_act.updateMeta(**tag)
 
                     # Technosphere activity
                     else:
@@ -828,6 +839,9 @@ class LCAProblemConfigurator:
                         for attr in custom_attributes:
                             attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                             sub_act.updateMeta(**attr_dict)
+                        # Add tags
+                        for tag in tags:
+                            sub_act.updateMeta(**tag)
                         # Add exchanges if defined in the configuration file
                         if add_exchanges:
                             act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
@@ -866,6 +880,9 @@ class LCAProblemConfigurator:
                         for attr in value.get(KEY_CUSTOM_ATTR, []):
                             attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                             sub_act.updateMeta(**attr_dict)
+                        # Add tags
+                        for tag in value.get(KEY_TAGS, []):
+                            sub_act.updateMeta(**tag)
                     else:
                         # It is a switch activity
                         switch_values = value.copy()
@@ -891,6 +908,9 @@ class LCAProblemConfigurator:
                         for attr in value.get(KEY_CUSTOM_ATTR, []):
                             attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
                             sub_act.updateMeta(**attr_dict)
+                        # Add tags
+                        for tag in value.get(KEY_TAGS, []):
+                            sub_act.updateMeta(**tag)
 
                     # Check if parent group is a switch activity or a regular activity
                     if group_switch_param:
