@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 0.1.3-beta
+Minor changes:
+- Hotfix for wurst library versioning issue (compatibility with bw2)
+
 ## Version 0.1.2-beta
 Minor changes:
 - fixing lca-algebraic version to 1.2.x
