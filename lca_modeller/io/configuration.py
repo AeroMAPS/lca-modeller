@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import premise as pm
 
 from lca_modeller.io import resources
+from lca_modeller.interpolation import interpolate_activities
 from lca_algebraic.params import (
     ParamDef, all_params
 )
@@ -698,7 +699,7 @@ class LCAProblemConfigurator:
             if len(years) == 1:
                 acts_dict[model_pathway] = acts[(model, pathway, years[0])]
             else:  # create intermediate activity that is a linear interpolation between years
-                acts_dict[model_pathway] = agb.interpolate_activities(
+                acts_dict[model_pathway] = interpolate_activities(
                     db_name=USER_DB,
                     act_name=name + f"\n[{loc}]\n({model}_{pathway})" if loc else name + f"\n({model}_{pathway})",
                     param=year_param,
