@@ -1,5 +1,5 @@
 # The name of your project. This will set up a brightway project.
-project: tutorial
+project: lca-modeller-tutorial
 reset_project: False  # True: deletes the project and re-start from scratch
 
 

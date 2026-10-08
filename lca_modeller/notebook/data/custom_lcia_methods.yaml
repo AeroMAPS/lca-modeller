@@ -1,5 +1,5 @@
 # The name of your project. This will set up a brightway project.
-project: tutorial
+project: lca-modeller-tutorial
 
 
 # The version and model of ecoinvent to use.
