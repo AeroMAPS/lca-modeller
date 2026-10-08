@@ -15,14 +15,13 @@ If prospective scenarios are provided, *premise* is used to adapt the EcoInvent 
 Additional features include the definition of custom impact assessment methods and the ability to modify existing activities in the EcoInvent database by adding or updating flows.
 
 
-📦 Installation
-----------------
-To install *LCA-Modeller*, setup a separate conda environment:
-```bash
-conda create -n lca_modeller python==3.10
-conda activate lca_modeller
-```
-And pip install the package:
+📦 Quick installation
+--------------------
+The use of the Python Package Index (PyPI) is the simplest method for installing LCA-Modeller.
+
+**Prerequisite**: LCA-Modeller needs at least Python 3.11.0.
+
+You can install the latest version with this command:
 ```bash
 pip install lca-modeller
 ```
