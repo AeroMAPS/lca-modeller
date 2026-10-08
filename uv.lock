@@ -1958,7 +1958,7 @@ wheels = [
 
 [[package]]
 name = "lca-modeller"
-version = "0.1.3b0"
+version = "0.1.4b0"
 source = { editable = "." }
 dependencies = [
     { name = "eight" },
