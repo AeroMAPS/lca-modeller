@@ -1,49 +1,51 @@
-[tool.poetry]
+[project]
 name = "lca-modeller"
 version = "0.1.3-beta"
-description = "Python library to build parametric LCA models from a configuration file. "
-authors = [
-    "Félix POLLET <felix.pollet@isae-supaero.fr>",
-    "Scott DELBECQ <scott.delbecq@isae-supaero.fr>",
-    "Thomas PLANES <thomas.planes@isae-supaero.fr>"
-]
-keywords = ["life cycle assessment", "LCA", "parametric model", "prospective LCA"]
-license = "GPL-3.0-only"
+description = "Python library to build parametric LCA models from a configuration file."
 readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "GPL-3.0-only" }
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.12"
-premise = "^2.2.3"
-lca-algebraic = ">=1.2.0, <1.3.0"
-jupyterlab = "*"
-"ruamel.yaml" = ">=0.15, <0.19"  # "^0.18.5"
-ensure = "^1.0.0"
-eight = "^1.0.1"
+authors = [
+    { name = "Félix POLLET", email = "felix.pollet@isae-supaero.fr" },
+    { name = "Scott DELBECQ", email = "scott.delbecq@isae-supaero.fr" },
+    { name = "Thomas PLANES", email = "thomas.planes@isae-supaero.fr" },
+]
 
-# Brigthway2 only (not Brightway25, which is not yet compatible with LCA-algebraic)
-bw2data = "^3.6.6"
-bw2io = "^0.8.12"
-bw2calc = "^1.8.2"
-wurst = "0.4"  # issue with wurst 0.5.0 not yet compatible with bw2data 3.6.6? opening an issue on wurst repo
+keywords = [
+    "life cycle assessment",
+    "LCA",
+    "parametric model",
+    "prospective LCA",
+]
 
-# Data visualization
-matplotlib = "^3.7"
-pyvis = "^0.3.0"
+dependencies = [
+    "lca-algebraic-bw25>=1.4.1,<2",
+    "premise>=2.5.2,<3",
+    "jupyterlab",
+    "ruamel.yaml>=0.15,<0.19",
+    "ensure>=1.0.0,<2",
+    "eight>=1.0.1,<2",
+    "matplotlib>=3.7,<4",
+    "pyvis>=0.3.0,<0.4",
+]
 
-# Resolving specific dependencies for macOS --> compatibility with pypardiso package imported by lca-algebraic
-mkl = [
-    {version = "2023.2.2", markers = "sys_platform == 'darwin'"},
-    {version = "*", markers = "sys_platform != 'darwin'"}
-    ]
-tbb = [
-    {version = "2021.10.0", markers = "sys_platform == 'darwin'"},
-    {version = "*", markers = "sys_platform != 'darwin'"}
-    ]
-intel-openmp = [
-    {version = "2023.2.0", markers = "sys_platform == 'darwin'"},
-    {version = "*", markers = "sys_platform != 'darwin'"}
-    ]
-#eight = {version = "^1.0.1", markers = "sys_platform == 'darwin'"}
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+constraint-dependencies = [
+    # (from premise) llvmlite >=0.46 dropped Intel-macOS wheels
+    "numba<0.63; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+
+    # (from premise) cryptography >=49 dropped Intel-macOS wheels
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 
 [build-system]
 requires = ["poetry-core"]

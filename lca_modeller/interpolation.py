@@ -150,21 +150,3 @@ def interpolate_activities(
     new_act = newActivity(db_name=db_name, name=act_name, unit=units[0], exchanges=exchanges)
 
     return new_act
-
-
-test = interpolate_activities(
-    db_name='Foreground DB',
-    act_name='test',
-    param=agb.all_params()['year'],
-    act_per_value={
-        2020: efuel_plant,
-        2030: efuel_dac,
-        2040: kero,
-        2050: efuel_solar
-        # 2041: kero,
-        # 2010: efuel_plant
-    },
-    extrapolate=False
-)
-
-test

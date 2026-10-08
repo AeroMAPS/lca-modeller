@@ -204,3 +204,16 @@ def safe_delete_brightway_project(projectname: str) -> None:
         )
     except:
         pass
+
+
+def confirm_reset(project_name: str) -> bool:
+    reset = input(
+        f"⚠️ You are about to RESET brightway project '{project_name}'.\n"
+        "This action is irreversible.\n\n"
+        "Type 'RESET' to continue, or anything else to cancel: "
+    )
+    if reset != "RESET":
+        print("Reset cancelled.")
+        return False
+
+    return True

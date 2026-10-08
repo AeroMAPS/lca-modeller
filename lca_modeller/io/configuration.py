@@ -4,11 +4,12 @@ from importlib.resources import open_text
 from abc import ABC, abstractmethod
 import shutil
 
+import bw2data
+import bw2calc
 import bw2io
 from bw2io.importers import ExcelLCIAImporter, CSVLCIAImporter
 from jsonschema import validate
 import lca_algebraic as agb
-import brightway2 as bw
 from sympy import sympify
 import logging
 import os.path as pth
@@ -25,10 +26,10 @@ from lca_algebraic.activity import ActivityOrActivityAmount, newActivity, Activi
 from typing import Dict, List, Union, Tuple
 from functools import reduce
 from collections import defaultdict
-from lca_modeller.helpers import safe_delete_brightway_project
+from lca_modeller.helpers import safe_delete_brightway_project, confirm_reset
 
 BIOSPHERE3_DB_NAME = "biosphere3"
-USER_BIOSPHERE_DB_NAME = "biosphere_user"
+USER_BIOSPHERE_DB_NAME = "lca_modeller_user_flows"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,15 +73,53 @@ DEFAULT_DESC_LCIA = 'custom LCIA method'
 KEY_RESET = 'reset_project'
 
 
+def _get_foreground_activity(name):
+    """Return foreground activity with exact name, or None."""
+    for act in bw2data.Database(USER_DB):
+        if act.get("name") == name:
+            return act
+    return None
+
+
+def _foreground_activity_exists(name):
+    return _get_foreground_activity(name) is not None
+
+
 def _get_unique_activity_name(key):
-    """
-    Returns a unique activity name by incrementing a suffix number.
-    """
     i = 1
-    while agb.findActivity(f'{key}_{i}', db_name=USER_DB, single=False):
+    while _foreground_activity_exists(f"{key}_{i}"):
         i += 1
-    new_key = f'{key}_{i}'
-    return new_key
+    return f"{key}_{i}"
+
+
+def _reset_db_and_proxy(db_name: str, foreground: bool = True):
+    """
+    Reset a database and remove any lca-algebraic proxy database
+    derived from it.
+
+    Proxy databases contain implementation-specific activities whose
+    exchanges may become invalid when the source database is rebuilt.
+    """
+    proxy_db_name = f"{db_name}-proxy"
+
+    if proxy_db_name in bw2data.databases:
+        _LOGGER.debug(
+            "Deleting stale proxy database '%s' before resetting '%s'.",
+            proxy_db_name,
+            db_name,
+        )
+        agb.deleteDb(proxy_db_name)
+
+    _LOGGER.debug(
+        "Resetting database '%s' (foreground=%s).",
+        db_name,
+        foreground,
+    )
+
+    agb.resetDb(
+        db_name,
+        foreground=foreground,
+    )
 
 
 def is_comma_separated(file_path):
@@ -157,6 +196,41 @@ def _parse_exchange(table: dict, act: ActivityExtended = None, params_meta_dict:
     return expr
 
 
+def _create_activity_wrapper(
+    activity,
+    name,
+    custom_attributes=None,
+    tags=None,
+):
+    """Create a lightweight foreground activity pointing 1:1
+    to an existing activity.
+
+    Used to attach metadata without copying the activity inventory.
+    """
+    custom_attributes = custom_attributes or []
+    tags = tags or []
+
+    wrapper = agb.newActivity(
+        db_name=USER_DB,
+        name=name,
+        unit=activity["unit"],
+        exchanges={activity: 1.0},
+    )
+
+    for attr in custom_attributes:
+        wrapper.updateMeta(
+            **{
+                attr.get(KEY_ATTR_NAME):
+                attr.get(KEY_ATTR_VALUE)
+            }
+        )
+
+    for tag in tags:
+        wrapper.updateMeta(**tag)
+
+    return wrapper
+
+
 def sum_amounts(act, exchange_name):
     """
     Sums the amounts of all exchanges with the same name in the activity.
@@ -228,13 +302,13 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
     :param source_method: name of the source method to duplicate and modify from. If not provided, the method is created from scratch.
     """
 
-    if name in bw.methods and bw.methods.get(name).get('description') != DEFAULT_DESC_LCIA:
+    if name in bw2data.methods and bw2data.methods.get(name).get('description') != DEFAULT_DESC_LCIA:
         # TODO: find a better way to check if method is a default one
         _LOGGER.warning(f"Method {name} already exists as default LCIA method and is protected. "
              f"If you wish to duplicate and modify, use `{KEY_SOURCE_METHOD}` option.")
         return
 
-    print("Creating custom LCIA method ", name)
+    _LOGGER.info("Creating custom LCIA method: %s", name)
 
     file_name, file_extension = os.path.splitext(filepath)
     if file_extension not in ['.csv', '.xlsx']:
@@ -243,11 +317,29 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
         raise ValueError("CSV file must be comma-separated. Please convert the file to a CSV with commas.")
 
     if source_method:
-        source_method_unit = bw.Method(source_method).metadata.get('unit')
+        # BW25 ecoinvent methods can be namespaced, e.g.
+        # ('ecoinvent-3.10', ..., ..., ...) instead of the legacy (..., ..., ...) tuple
+        source_method = resolve_method(source_method)
+
+        source_method_unit = (
+            bw2data.Method(source_method)
+            .metadata
+            .get("unit")
+        )
+
         if unit != source_method_unit:
-            _LOGGER.warning(f"Unit `{unit}` provided for method {name} is different from source method. "
-                            f"Overriding with source method unit `{source_method_unit}`.")
-        unit = source_method_unit if unit != source_method_unit or not unit else unit
+            _LOGGER.warning(
+                f"Unit `{unit}` provided for method {name} "
+                f"is different from source method. "
+                f"Overriding with source method unit "
+                f"`{source_method_unit}`."
+            )
+
+        unit = (
+            source_method_unit
+            if unit != source_method_unit or not unit
+            else unit
+        )
 
     Importer = CSVLCIAImporter if file_extension == '.csv' else ExcelLCIAImporter
     newLCIA = Importer(filepath, name, DEFAULT_DESC_LCIA, unit)
@@ -258,7 +350,7 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
     # If remaining flows: create biosphere database to define new flows
     if newLCIA.statistics(print_stats=False)[2] != 0:
         # User biosphere to store new flows (e.g. contrails)
-        user_biosphere = bw.Database(USER_BIOSPHERE_DB_NAME)
+        user_biosphere = bw2data.Database(USER_BIOSPHERE_DB_NAME)
         user_biosphere.write(dict())
 
         # Link with existing flows in user biosphere
@@ -278,12 +370,31 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
 
     # Add additional data from source method
     if source_method:
-        source_cfs = bw.Method(source_method).load()
+        source_cfs = bw2data.Method(source_method)
+
         for method in newLCIA.data:
-            new_cfs_flows = [cf["input"] for cf in method["exchanges"] if "input" in cf]
-            for flow, cf_value in source_cfs:
-                if flow not in new_cfs_flows:
-                    flow_data = bw.Database(flow[0]).get(flow[1])
+            new_cfs_flows = set()
+
+            for cf in method["exchanges"]:
+                if "input" not in cf:
+                    continue
+
+                flow = cf["input"]
+
+                if isinstance(flow, int):
+                    flow = bw2data.get_node(id=flow).key
+                elif isinstance(flow, list):
+                    flow = tuple(flow)
+
+                new_cfs_flows.add(flow)
+
+            for source_cf in source_cfs:
+                flow_data = source_cf[0]
+                cf_value = source_cf[1]
+
+                flow_key = flow_data.key
+
+                if flow_key not in new_cfs_flows:
                     method["exchanges"].append(
                         {
                             "name": flow_data.get("name"),
@@ -292,7 +403,7 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
                             "unit": flow_data.get("unit"),
                             "type": flow_data.get("type"),
                             "code": flow_data.get("code"),
-                            "input": flow,
+                            "input": flow_key,
                         }
                     )
 
@@ -305,7 +416,45 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
         fp_source = bw2io.export.excel.write_lcia_matching(newLCIA, file_name)
         fp_destination = os.path.abspath(file_name) + '_updated' + '.xlsx'
         shutil.move(fp_source, fp_destination)
-        print(u"Wrote matching file to:\n{}".format(fp_destination))
+        _LOGGER.info(
+            "LCIA matching file written to: %s",
+            fp_destination,
+        )
+
+
+def resolve_method(method):
+    """Resolve a LCIA method against the current Brightway project.
+
+    Supports both legacy unnamespaced methods and BW25/ecoinvent
+    methods prefixed with an ecoinvent namespace.
+    """
+    method = tuple(method)
+
+    # Exact match: legacy BW projects or unnamespaced BW25
+    if method in bw2data.methods:
+        return method
+
+    # BW25 namespaced methods, e.g.
+    # ('ecoinvent-3.9.1', ...) + legacy method tuple
+    matches = [
+        candidate
+        for candidate in bw2data.methods
+        if len(candidate) >= len(method)
+        and tuple(candidate[-len(method):]) == method
+    ]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    if not matches:
+        raise ValueError(
+            f"LCIA method {method!r} not found in Brightway project "
+            f"{bw2data.projects.current!r}"
+        )
+
+    raise ValueError(
+        f"LCIA method {method!r} is ambiguous. Matches: {matches}"
+    )
 
 
 class LCAProblemConfigurator:
@@ -339,7 +488,7 @@ class LCAProblemConfigurator:
         project_name, model = self._build_model(reset=reset)
 
         # Get LCIA methods if declared
-        methods = [eval(m) for m in self._serializer.data.get(KEY_METHODS, [])]
+        methods = [resolve_method(eval(m)) for m in self._serializer.data.get(KEY_METHODS, [])]
         custom_methods = [eval(m.get(KEY_NAME)) for m in self._serializer.data.get(KEY_CUSTOM_METHODS, [])]
         methods.extend(custom_methods)
 
@@ -376,8 +525,17 @@ class LCAProblemConfigurator:
         if not new_premise_scenarios:
             return
         else:
-            print("Generating new prospective databases with premise: \n" + ",\n".join([f"{s[KEY_MODEL]}_{s[KEY_PATHWAY]}_{s[KEY_YEAR]}" for s in new_premise_scenarios]))
-        if "biosphere3" not in bw.databases:
+            scenario_names = [
+                f"{s[KEY_MODEL]}_{s[KEY_PATHWAY]}_{s[KEY_YEAR]}"
+                for s in new_premise_scenarios
+            ]
+            _LOGGER.info(
+                "Generating %d prospective premise database(s): %s",
+                len(scenario_names),
+                ", ".join(scenario_names),
+            )
+
+        if "biosphere3" not in bw2data.databases:
             raise ValueError(
                 f"Biosphere database must be named 'biosphere3' for premise, or is missing. "
                 f"Consider resetting the project with 'reset_project=True' in configuration file."
@@ -409,9 +567,9 @@ class LCAProblemConfigurator:
 
         ### Init the brightway2 project
         project_name = self._serializer.data.get(KEY_PROJECT)
-        if reset:
+        if reset and confirm_reset(project_name):
             safe_delete_brightway_project(project_name)
-        bw.projects.set_current(project_name)
+        bw2data.projects.set_current(project_name)
         ei_dict = self._serializer.data.get(KEY_ECOINVENT)
         ei_version = self.ei_version = ei_dict[KEY_VERSION]
         ei_model = self.ei_model = ei_dict[KEY_MODEL]
@@ -419,9 +577,15 @@ class LCAProblemConfigurator:
         premise_dict = self._serializer.data.get(KEY_PREMISE, dict())
         self.premise_scenarios = premise_dict.get(KEY_SCENARIOS, [])
 
-        if self.source_ei_name in bw.databases and not reset:
-            print("Initial setup of EcoInvent already done, skipping. "
-                  "To reset the project use option `reset_project=True` in configuration file.")
+        if self.source_ei_name in bw2data.databases and not reset:
+            _LOGGER.info(
+                "Ecoinvent database '%s' already available; skipping import.",
+                self.source_ei_name,
+            )
+
+            _LOGGER.info(
+                "Set reset_project: True in configuration file to rebuild the Brightway project."
+            )
 
         else:  ### Import Ecoinvent DB
             # User must create a file named .env, that he will not share /commit, and contains the following :
@@ -436,6 +600,11 @@ class LCAProblemConfigurator:
                     "ECOINVENT_PASSWORD=<your_password>\n")
 
             # This downloads ecoinvent and installs biopshere + technosphere + LCIA methods
+            _LOGGER.info(
+                "Importing ecoinvent %s (%s)...",
+                ei_version,
+                ei_model,
+            )
             bw2io.import_ecoinvent_release(
                 version=ei_version,
                 system_model=ei_model,
@@ -452,26 +621,37 @@ class LCAProblemConfigurator:
             pathway = scenario[KEY_PATHWAY]
             year = scenario[KEY_YEAR]
             db_name = f"ecoinvent_{ei_model}_{ei_version.replace('3.9.1', '3.9')}_{model}_{pathway}_{year}"
-            if db_name not in bw.databases:
+            if db_name not in bw2data.databases:
                 new_premise_scenarios.append(scenario)
                 db_names.append(db_name)
         self._setup_premise(new_premise_scenarios, db_names)
 
         ### Create new LCIA methods provided by user
         custom_methods = self._serializer.data.get(KEY_CUSTOM_METHODS, [])
-        agb.resetDb(USER_BIOSPHERE_DB_NAME, foreground=False)  # create biosphere db dedicated to new flows (e.g. contrails)
-        for method in custom_methods:
-            name = eval(method.get(KEY_NAME))
-            filepath = method.get(KEY_FILEPATH)
-            unit = method.get(KEY_UNIT)
-            source_method = eval(method.get(KEY_SOURCE_METHOD)) if method.get(KEY_SOURCE_METHOD) else None
-            create_custom_lcia_method(name, filepath, unit, source_method)
+        # create/reset biosphere db dedicated to new flows (e.g. contrails)
+        _reset_db_and_proxy(
+            USER_BIOSPHERE_DB_NAME,
+            foreground=False,
+        )
+        if custom_methods:
+            # implement new lcia methods
+            _LOGGER.info(
+                "Creating %d custom LCIA method(s)...",
+                len(custom_methods),
+            )
+            for method in custom_methods:
+                name = eval(method.get(KEY_NAME))
+                filepath = method.get(KEY_FILEPATH)
+                unit = method.get(KEY_UNIT)
+                source_method = eval(method.get(KEY_SOURCE_METHOD)) if method.get(KEY_SOURCE_METHOD) else None
+                create_custom_lcia_method(name, filepath, unit, source_method)
 
         ### Set the foreground database
-        agb.resetDb(USER_DB)  # cleanup the whole foreground model to avoid errors
-        agb.setForeground(USER_DB)
-        # You may remove this line if you import a project and parameters from an external source (see loadParam(..))
-        agb.resetParams()  # reset parameters stored at project level
+        _reset_db_and_proxy(USER_DB, foreground=True)  # cleanup the whole foreground model to avoid errors
+        agb.resetParams()  # reset parameters stored at project level (fresh start)
+        # agb.Settings.factorize_static_bg = True  # improves performance on large model copying big Background activities
+        # TODO: fix behaviour of factorize_static_bg (creates a foreground DB-proxy but needs
+        #  to be handled correctly in particular regarding its reset (or not) at each run of the model.)
 
         return project_name
 
@@ -491,7 +671,7 @@ class LCAProblemConfigurator:
             self.params_meta_dict = {}
 
         ### Build the model
-        print("Building LCA model from configuration file")
+        _LOGGER.info("Building foreground model...")
         # Get model definition from configuration file
         model_definition = self._serializer.data.get(KEY_MODEL)
         model = agb.newActivity(
@@ -514,7 +694,7 @@ class LCAProblemConfigurator:
         #        exchanges={model: functional_value}
         #    )
         #    problem.model = normalized_model
-        print("LCA model successfully created")
+        _LOGGER.info("Foreground model successfully created.")
 
         return project_name, model
 
@@ -560,12 +740,15 @@ class LCAProblemConfigurator:
 
         # Previously defined foreground activity
         if name.startswith('#'):
-            act = agb.findActivity(name[1:], single=False, db_name=USER_DB)
-            if not act:
-                raise ValueError(f"Activity with name '{name}' not found.")
-            elif isinstance(act, list):
-                _LOGGER.warning(f"Multiple activities found with name '{name}'.")
-                act = act[0]
+            activity_name = name[1:]
+            act = _get_foreground_activity(activity_name)
+
+            if act is None:
+                raise ValueError(
+                    f"Activity with name '{activity_name}' not found "
+                    f"in foreground database '{USER_DB}'."
+                )
+
             return act
 
         # Background activity
@@ -580,16 +763,18 @@ class LCAProblemConfigurator:
             )
             # Copy activity to foreground database so that we can safely modify it in the future
             if copy_act:
+                _LOGGER.debug(
+                    "Copying activity '%s' [%s] to foreground as '%s'.",
+                    name,
+                    loc,
+                    code,
+                )
                 act = agb.copyActivity(
                     USER_DB,
                     act,
                     code
                 )
-            # Fix for mismatch chemical formulas (until fixed by future brightway/lca-algebraic releases)
-            for ex in act.exchanges():
-                if "formula" in ex:
-                    del ex["formula"]
-                    ex.save()
+
         return act
 
     def _get_tech_activity_premise(self, name, loc, unit, copy_act: bool = True):
@@ -623,6 +808,13 @@ class LCAProblemConfigurator:
                     )
                 # default behaviour: copy it to the foreground database to avoid unwanted modification of background db
                 if copy_act:
+                    _LOGGER.debug(
+                        "Copying premise activity '%s' (%s/%s/%s) to foreground.",
+                        name,
+                        model,
+                        pathway,
+                        year,
+                    )
                     act = agb.copyActivity(  # safe copy of background act
                         db_name=USER_DB,
                         activity=act,
@@ -631,7 +823,7 @@ class LCAProblemConfigurator:
             acts[(model, pathway.replace('-', '_'), year)] = act
         return acts
 
-    def _create_proxy_activity_premise(self, name, loc, unit, code):
+    def _create_proxy_activity_premise(self, name, loc, unit, code, modify_inventory=False):
         """
         Searches for an ecoinvent activity in the prospective databases and build a parent activity
         that enables to switch between scenarios with dedicated parameters.
@@ -681,7 +873,18 @@ class LCAProblemConfigurator:
         )
 
         # Get the ecoinvent activity for each combination of model, pathway, and year
-        acts = self._get_tech_activity_premise(name, loc, unit)
+        acts = self._get_tech_activity_premise(
+            name,
+            loc,
+            unit,
+            copy_act=modify_inventory,
+        )
+
+        _LOGGER.debug(
+            "Building prospective proxy '%s' from %d scenario activities.",
+            code,
+            len(acts),
+        )
 
         # Dictionary to hold the lists of years for each (model, pathway)
         model_pathway_years = {}
@@ -699,6 +902,13 @@ class LCAProblemConfigurator:
             if len(years) == 1:
                 acts_dict[model_pathway] = acts[(model, pathway, years[0])]
             else:  # create intermediate activity that is a linear interpolation between years
+                _LOGGER.debug(
+                    "Creating interpolation activity for '%s' (%s/%s) across years %s.",
+                    name,
+                    model,
+                    pathway,
+                    sorted(years),
+                )
                 acts_dict[model_pathway] = interpolate_activities(
                     db_name=USER_DB,
                     act_name=name + f"\n[{loc}]\n({model}_{pathway})" if loc else name + f"\n({model}_{pathway})",
@@ -709,6 +919,12 @@ class LCAProblemConfigurator:
                 )
 
         # Create parent activity that enables to switch between each (model, pathway)
+        _LOGGER.debug(
+            "Creating premise switch activity '%s' for models=%s, pathways=%s.",
+            code,
+            models,
+            pathways,
+        )
         act = newMultiSwitchAct(
             dbname=USER_DB,
             name=code,
@@ -765,37 +981,135 @@ class LCAProblemConfigurator:
 
             # Technosphere activity
             else:
-                sub_act = self._get_tech_activity(name, loc, unit) if not self.premise_scenarios else \
-                    self._create_proxy_activity_premise(name, loc, unit, code=name)
-                # Add custom attributes
-                for attr in custom_attributes:
-                    attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
-                    sub_act.updateMeta(**attr_dict)
-                # Add tags
-                for tag in tags:
-                    sub_act.updateMeta(**tag)
-                # Add exchanges if defined in the configuration file
+                modify_inventory = bool(
+                    add_exchanges
+                    or update_exchanges
+                    or delete_exchanges
+                )
+
+                needs_wrapper = bool(
+                    custom_attributes
+                    or tags
+                )
+
+                if not self.premise_scenarios:
+
+                    # CASE A: Activity inventory must be modified
+                    if modify_inventory:
+                        _LOGGER.debug(
+                            "Activity '%s' has inventory modifications; using a foreground copy.",
+                            name,
+                        )
+                        sub_act = self._get_tech_activity(
+                            name=name,
+                            loc=loc,
+                            unit=unit,
+                            copy_act=True,
+                        )
+
+                        # Metadata can safely be attached to the foreground copy
+                        for attr in custom_attributes:
+                            attr_dict = {
+                                attr.get(KEY_ATTR_NAME):
+                                    attr.get(KEY_ATTR_VALUE)
+                            }
+                            sub_act.updateMeta(**attr_dict)
+
+                        for tag in tags:
+                            sub_act.updateMeta(**tag)
+
+                    else:
+                        # CASE B/C: Keep original activity in background
+                        sub_act = self._get_tech_activity(
+                            name=name,
+                            loc=loc,
+                            unit=unit,
+                            copy_act=False,
+                        )
+
+                        # Metadata only -> lightweight foreground wrapper
+                        if needs_wrapper:
+                            _LOGGER.debug(
+                                "Creating lightweight foreground wrapper for activity '%s'.",
+                                name,
+                            )
+                            sub_act = _create_activity_wrapper(
+                                activity=sub_act,
+                                name=name,
+                                custom_attributes=custom_attributes,
+                                tags=tags,
+                            )
+
+                else:  # premise databases
+                    # Create parent activity that enables to switch between each (model, pathway and year)
+                    sub_act = self._create_proxy_activity_premise(
+                        name=name,
+                        loc=loc,
+                        unit=unit,
+                        code=name,
+                        modify_inventory=modify_inventory,
+                    )
+
+                    # Existing premise proxy is foreground, so metadata can be added
+                    for attr in custom_attributes:
+                        attr_dict = {
+                            attr.get(KEY_ATTR_NAME):
+                                attr.get(KEY_ATTR_VALUE)
+                        }
+                        sub_act.updateMeta(**attr_dict)
+
+                    for tag in tags:
+                        sub_act.updateMeta(**tag)
+
+                # Modify exchanges only after ensuring we have a foreground copy
                 if add_exchanges:
-                    act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                    self._add_exchanges(sub_act, act_meta, add_exchanges)
-                # Update exchanges if defined in the configuration file
+                    act_meta = {
+                        KEY_NAME: name,
+                        KEY_LOCATION: loc,
+                        KEY_UNIT: unit,
+                    }
+                    self._add_exchanges(
+                        sub_act,
+                        act_meta,
+                        add_exchanges,
+                    )
+
                 if update_exchanges:
-                    act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                    self._update_exchanges(sub_act, act_meta, update_exchanges)
-                # Delete exchanges if defined in the configuration file
+                    act_meta = {
+                        KEY_NAME: name,
+                        KEY_LOCATION: loc,
+                        KEY_UNIT: unit,
+                    }
+                    self._update_exchanges(
+                        sub_act,
+                        act_meta,
+                        update_exchanges,
+                    )
+
                 if delete_exchanges:
-                    act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                    self._delete_exchanges(sub_act, act_meta, delete_exchanges)
+                    act_meta = {
+                        KEY_NAME: name,
+                        KEY_LOCATION: loc,
+                        KEY_UNIT: unit,
+                    }
+                    self._delete_exchanges(
+                        sub_act,
+                        act_meta,
+                        delete_exchanges,
+                    )
+
             group.addExchanges({sub_act: exchange})
 
         ### CASE 2: the table contains multiple activities
         for key, value in table.items():
             if isinstance(value, dict):  # value defines a sub activity
                 # Check if an activity with this key as already been defined to avoid overriding it
-                if agb.findActivity(key, db_name=USER_DB, single=False):
-                    _LOGGER.warning(f"Activity with name '{key}' defined multiple times. "
-                         f"Adding suffix increments to labels. "
-                         f"To refer a pre-existing activity, use `name: '#activity_name'`.")
+                if _foreground_activity_exists(key):
+                    _LOGGER.warning(
+                        f"Activity with name '{key}' defined multiple times. "
+                        f"Adding suffix increments to labels. "
+                        f"To refer a pre-existing activity, use `name: '#activity_name'`."
+                    )
                     key = _get_unique_activity_name(key)
 
                 name = value.get(KEY_NAME, '')
@@ -834,27 +1148,126 @@ class LCAProblemConfigurator:
 
                     # Technosphere activity
                     else:
-                        sub_act = self._get_tech_activity(name, loc, unit, key) if not self.premise_scenarios else \
-                            self._create_proxy_activity_premise(name, loc, unit, code=key)
-                        # Add custom attributes
-                        for attr in custom_attributes:
-                            attr_dict = {attr.get(KEY_ATTR_NAME): attr.get(KEY_ATTR_VALUE)}
-                            sub_act.updateMeta(**attr_dict)
-                        # Add tags
-                        for tag in tags:
-                            sub_act.updateMeta(**tag)
-                        # Add exchanges if defined in the configuration file
+                        # A full foreground copy is only necessary if we modify
+                        # the inventory of the background activity.
+                        modify_inventory = bool(
+                            update_exchanges
+                            or delete_exchanges
+                            or add_exchanges
+                        )
+
+                        # Tags/custom attributes only require a lightweight
+                        # foreground wrapper, not a copy of the whole inventory.
+                        needs_wrapper = bool(
+                            custom_attributes
+                            or tags
+                        )
+
+                        if not self.premise_scenarios:
+
+                            # Get either a foreground copy (if inventory will be modified)
+                            # or the untouched background activity.
+                            sub_act = self._get_tech_activity(
+                                name=name,
+                                loc=loc,
+                                unit=unit,
+                                code=key,
+                                copy_act=modify_inventory,
+                            )
+
+                            if modify_inventory:
+                                _LOGGER.debug(
+                                    "Activity '%s' has inventory modifications; using a foreground copy.",
+                                    name,
+                                )
+                                # sub_act is now a foreground copy, so metadata can
+                                # safely be attached directly to it.
+                                for attr in custom_attributes:
+                                    attr_dict = {
+                                        attr.get(KEY_ATTR_NAME):
+                                            attr.get(KEY_ATTR_VALUE)
+                                    }
+                                    sub_act.updateMeta(**attr_dict)
+
+                                for tag in tags:
+                                    sub_act.updateMeta(**tag)
+
+                            elif needs_wrapper:
+                                # sub_act is still the original background activity.
+                                # Create a lightweight foreground activity only to
+                                # carry tags/custom attributes.
+                                _LOGGER.debug(
+                                    "Creating lightweight foreground wrapper '%s' for background activity '%s'.",
+                                    key,
+                                    name,
+                                )
+                                sub_act = _create_activity_wrapper(
+                                    activity=sub_act,
+                                    name=key,
+                                    custom_attributes=custom_attributes,
+                                    tags=tags,
+                                )
+
+                        else:
+                            # Create parent activity that enables to switch between each (model, pathway and year)
+                            sub_act = self._create_proxy_activity_premise(
+                                name=name,
+                                loc=loc,
+                                unit=unit,
+                                code=key,
+                                modify_inventory=modify_inventory,
+                            )
+
+                            # Premise proxy is already foreground, so metadata
+                            # can be attached directly.
+                            for attr in custom_attributes:
+                                attr_dict = {
+                                    attr.get(KEY_ATTR_NAME):
+                                        attr.get(KEY_ATTR_VALUE)
+                                }
+                                sub_act.updateMeta(**attr_dict)
+
+                            for tag in tags:
+                                sub_act.updateMeta(**tag)
+
+                        # At this point, if inventory modifications were requested,
+                        # sub_act is guaranteed to be a foreground activity/copy.
+
                         if add_exchanges:
-                            act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                            self._add_exchanges(sub_act, act_meta, add_exchanges)
-                        # Update exchanges if defined in the configuration file
+                            act_meta = {
+                                KEY_NAME: name,
+                                KEY_LOCATION: loc,
+                                KEY_UNIT: unit,
+                            }
+                            self._add_exchanges(
+                                sub_act,
+                                act_meta,
+                                add_exchanges,
+                            )
+
                         if update_exchanges:
-                            act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                            self._update_exchanges(sub_act, act_meta, update_exchanges)
-                        # Delete exchanges if defined in the configuration file
+                            act_meta = {
+                                KEY_NAME: name,
+                                KEY_LOCATION: loc,
+                                KEY_UNIT: unit,
+                            }
+                            self._update_exchanges(
+                                sub_act,
+                                act_meta,
+                                update_exchanges,
+                            )
+
                         if delete_exchanges:
-                            act_meta = {KEY_NAME: name, KEY_LOCATION: loc, KEY_UNIT: unit}
-                            self._delete_exchanges(sub_act, act_meta, delete_exchanges)
+                            act_meta = {
+                                KEY_NAME: name,
+                                KEY_LOCATION: loc,
+                                KEY_UNIT: unit,
+                            }
+                            self._delete_exchanges(
+                                sub_act,
+                                act_meta,
+                                delete_exchanges,
+                            )
 
                     if group_switch_param:
                         # Parent group is a switch activity
@@ -923,6 +1336,7 @@ class LCAProblemConfigurator:
                         # Parent group is a regular activity
                         group.addExchanges({sub_act: exchange})
                     self._parse_problem_table(sub_act, value, switch_param)
+
 
     def _update_exchanges(self, act, act_meta, update_exchanges):
         """
