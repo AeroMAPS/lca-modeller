@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 0.1.5-beta
+LCA-Modeller now builds the foreground system more efficiently:
+- Premise activities are now defined by separate branches for each year, with a single interpolation layer at the top, avoiding overly complicated sympy expressions.
+- Inventory modifications of existing ecoinvent activities can now be represented as correction exchanges (`foreground_modifications: overlay` option in configuration file), rather than copying the entire activity into the foreground. This reduces the size of the foreground system and improves performance.
+- Other minor improvements and fixes (removal of the IAM later switch, faster creation of custom lcia methods, etc...).
+
+## Version 0.1.4-beta
+Migrating to lca-algebraic-bw25/brigthway25
+
 ## Version 0.1.3-beta
 Minor changes:
 - Hotfix for wurst library versioning issue (compatibility with bw2)
