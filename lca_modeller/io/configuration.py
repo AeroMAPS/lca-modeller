@@ -3,11 +3,15 @@ import os
 from importlib.resources import open_text
 from abc import ABC, abstractmethod
 import shutil
+from uuid import uuid4
 
 import bw2data
 import bw2calc
 import bw2io
 from bw2io.importers import ExcelLCIAImporter, CSVLCIAImporter
+from bw2io.strategies import link_iterable_by_fields, normalize_units
+from bw2io.utils import activity_hash
+from bw2data.backends.schema import ActivityDataset
 from jsonschema import validate
 import lca_algebraic as agb
 from sympy import sympify
@@ -294,16 +298,71 @@ def newMultiSwitchAct(dbname, name, paramDefList: Union[List[ParamDef], ParamDef
     return res
 
 
+def _ensure_user_biosphere():
+    """Keep custom flow identifiers stable across methods and model generations."""
+    database = bw2data.Database(USER_BIOSPHERE_DB_NAME)
+    if USER_BIOSPHERE_DB_NAME not in bw2data.databases:
+        database.register()
+    return database
+
+
+def _link_custom_lcia_flows(importer):
+    """Reuse custom flows, inserting new nodes without a database-wide VACUUM."""
+    database = _ensure_user_biosphere()
+    normalize_units(importer.data)
+    link_iterable_by_fields(
+        importer.data, other=database, edge_kinds=["biosphere"],
+        fields=("name", "categories"),
+    )
+    created = {}
+    for method in importer.data:
+        for cf in method["exchanges"]:
+            if cf.get("input"):
+                continue
+            identity = activity_hash(cf, fields=("name", "categories"))
+            if identity not in created:
+                categories = cf["categories"]
+                flow = database.new_activity(
+                    code=uuid4().hex, name=cf["name"], categories=categories,
+                    unit=cf["unit"],
+                    type="resource" if categories[0] == "resource" else "emission",
+                )
+                flow.save()
+                created[identity] = flow.id
+            cf["input"] = created[identity]
+    if created:
+        database.metadata["number"] = len(database)
+        database.process()
+        _LOGGER.info("Added %d custom biosphere flow(s).", len(created))
+
+
+def _lcia_flow_id(flow):
+    """Normalize a CF identifier without looking up already normalized BW25 IDs."""
+    if isinstance(flow, int):
+        return flow
+    return bw2data.get_node(key=tuple(flow)).id
+
+
+def _lcia_flow_metadata(flow_ids):
+    """Read source-flow metadata in batches for the matching spreadsheet."""
+    flow_ids = list(set(flow_ids))
+    result = {}
+    # Stay below SQLite's parameter limit, including on older installations.
+    for start in range(0, len(flow_ids), 800):
+        query = (
+            ActivityDataset.select(ActivityDataset.id, ActivityDataset.data)
+            .where(ActivityDataset.id.in_(flow_ids[start:start + 800]))
+            .dicts()
+        )
+        result.update((row["id"], row["data"]) for row in query)
+    missing = set(flow_ids) - result.keys()
+    if missing:
+        raise ValueError(f"Source LCIA method references missing biosphere flows: {sorted(missing)}")
+    return result
+
+
 def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source_method: str = None):
-    """
-    Creates a new LCIA method from an Excel file.
-
-    :param name: name of the new method
-    :param filepath: path to the Excel file
-    :param unit: unit of the method
-    :param source_method: name of the source method to duplicate and modify from. If not provided, the method is created from scratch.
-    """
-
+    """Create or update a custom LCIA method from CSV or Excel characterization factors."""
     if name in bw2data.methods and bw2data.methods.get(name).get('description') != DEFAULT_DESC_LCIA:
         # TODO: find a better way to check if method is a default one
         _LOGGER.warning(f"Method {name} already exists as default LCIA method and is protected. "
@@ -311,7 +370,6 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
         return
 
     _LOGGER.info("Creating custom LCIA method: %s", name)
-
     file_name, file_extension = os.path.splitext(filepath)
     if file_extension not in ['.csv', '.xlsx']:
         raise ValueError("File extension not supported. Please provide a CSV or Excel file.")
@@ -319,109 +377,66 @@ def create_custom_lcia_method(name: str, filepath: str, unit: str = None, source
         raise ValueError("CSV file must be comma-separated. Please convert the file to a CSV with commas.")
 
     if source_method:
-        # BW25 ecoinvent methods can be namespaced, e.g.
-        # ('ecoinvent-3.10', ..., ..., ...) instead of the legacy (..., ..., ...) tuple
         source_method = resolve_method(source_method)
-
-        source_method_unit = (
-            bw2data.Method(source_method)
-            .metadata
-            .get("unit")
-        )
-
+        source_method_unit = bw2data.Method(source_method).metadata.get("unit")
         if unit != source_method_unit:
             _LOGGER.warning(
                 f"Unit `{unit}` provided for method {name} "
                 f"is different from source method. "
-                f"Overriding with source method unit "
-                f"`{source_method_unit}`."
+                f"Overriding with source method unit `{source_method_unit}`."
             )
-
-        unit = (
-            source_method_unit
-            if unit != source_method_unit or not unit
-            else unit
-        )
+        unit = source_method_unit
 
     Importer = CSVLCIAImporter if file_extension == '.csv' else ExcelLCIAImporter
-    newLCIA = Importer(filepath, name, DEFAULT_DESC_LCIA, unit)
+    importer = Importer(filepath, name, DEFAULT_DESC_LCIA, unit)
+    importer.apply_strategies(verbose=False)
+    if importer.statistics(print_stats=False)[2]:
+        _link_custom_lcia_flows(importer)
 
-    # Link with existing biosphere flows
-    newLCIA.apply_strategies(verbose=False)
-
-    # If remaining flows: create biosphere database to define new flows
-    if newLCIA.statistics(print_stats=False)[2] != 0:
-        # User biosphere to store new flows (e.g. contrails)
-        user_biosphere = bw2data.Database(USER_BIOSPHERE_DB_NAME)
-        user_biosphere.write(dict())
-
-        # Link with existing flows in user biosphere
-        super(ExcelLCIAImporter, newLCIA).__init__(
-            filepath,
-            biosphere=USER_BIOSPHERE_DB_NAME
-        )  # Waiting for bw2io fix on that (issue #249)
-        newLCIA.apply_strategies(verbose=False)
-
-        # Add missing flows and link
-        super(ExcelLCIAImporter, newLCIA).__init__(
-            filepath,
-            biosphere=USER_BIOSPHERE_DB_NAME
-        )  # for some reason instance has to be reset, probably to reinit strategy functions with latest data available.
-        newLCIA.add_missing_cfs()  # add missing flows to dedicated biosphere db
-        newLCIA.apply_strategies(verbose=False)
-
-    # Add additional data from source method
+    source_cfs = []
     if source_method:
-        source_cfs = bw2data.Method(source_method)
+        # Iterating Method resolves every flow with a separate SQL query.
+        source_cfs = [
+            (_lcia_flow_id(row[0]), *row[1:])
+            for row in bw2data.Method(source_method).load()
+        ]
 
-        for method in newLCIA.data:
-            new_cfs_flows = set()
+    for definition in importer.data:
+        custom_cfs = [
+            (_lcia_flow_id(cf["input"]), cf["amount"])
+            for cf in definition["exchanges"]
+        ]
+        overridden = {row[0] for row in custom_cfs}
+        inherited = [row for row in source_cfs if row[0] not in overridden]
+        if inherited:
+            metadata = _lcia_flow_metadata(row[0] for row in inherited)
+            for row in inherited:
+                flow = metadata[row[0]]
+                # The matching report shows the central value; the method keeps
+                # the complete source CF, including uncertainty and location.
+                amount = row[1].get("amount") if isinstance(row[1], dict) else row[1]
+                definition["exchanges"].append({
+                    "name": flow.get("name"), "categories": flow.get("categories"),
+                    "amount": amount, "unit": flow.get("unit"),
+                    "type": "biosphere", "input": row[0],
+                })
 
-            for cf in method["exchanges"]:
-                if "input" not in cf:
-                    continue
-
-                flow = cf["input"]
-
-                if isinstance(flow, int):
-                    flow = bw2data.get_node(id=flow).key
-                elif isinstance(flow, list):
-                    flow = tuple(flow)
-
-                new_cfs_flows.add(flow)
-
-            for source_cf in source_cfs:
-                flow_data = source_cf[0]
-                cf_value = source_cf[1]
-
-                flow_key = flow_data.key
-
-                if flow_key not in new_cfs_flows:
-                    method["exchanges"].append(
-                        {
-                            "name": flow_data.get("name"),
-                            "categories": flow_data.get("categories"),
-                            "amount": cf_value,
-                            "unit": flow_data.get("unit"),
-                            "type": flow_data.get("type"),
-                            "code": flow_data.get("code"),
-                            "input": flow_key,
-                        }
-                    )
-
-    # Write new LCIA method
-    newLCIA.statistics()
-    newLCIA.write_methods(overwrite=True)
-
-    # Write excel file of new method updated with data from source method
-    if source_method:
-        fp_source = bw2io.export.excel.write_lcia_matching(newLCIA, file_name)
-        fp_destination = os.path.abspath(file_name) + '_updated' + '.xlsx'
-        shutil.move(fp_source, fp_destination)
-        _LOGGER.info(
-            "LCIA matching file written to: %s",
-            fp_destination,
+        method = bw2data.Method(definition["name"])
+        if method.name in bw2data.methods:
+            del bw2data.methods[method.name]
+        method.register(
+            description=definition["description"],
+            filename=definition["filename"], unit=definition["unit"],
         )
+        # Method.write already processes the method; the importer processes it twice.
+        method.write(custom_cfs + inherited)
+
+    importer.statistics()
+    if source_method:
+        fp_source = bw2io.export.excel.write_lcia_matching(importer, file_name)
+        fp_destination = os.path.abspath(file_name) + '_updated.xlsx'
+        shutil.move(fp_source, fp_destination)
+        _LOGGER.info("LCIA matching file written to: %s", fp_destination)
 
 
 def resolve_method(method):
@@ -584,7 +599,13 @@ class LCAProblemConfigurator:
         project_name = self._serializer.data.get(KEY_PROJECT)
         if reset and confirm_reset(project_name):
             safe_delete_brightway_project(project_name)
-        bw2data.projects.set_current(project_name)
+        if bw2data.projects.current != project_name:
+            bw2data.projects.set_current(project_name)
+        else:
+            _LOGGER.info(
+                "Brightway project '%s' already set as current.",
+                project_name,
+            )
         ei_dict = self._serializer.data.get(KEY_ECOINVENT)
         ei_version = self.ei_version = ei_dict[KEY_VERSION]
         ei_model = self.ei_model = ei_dict[KEY_MODEL]
@@ -643,11 +664,8 @@ class LCAProblemConfigurator:
 
         ### Create new LCIA methods provided by user
         custom_methods = self._serializer.data.get(KEY_CUSTOM_METHODS, [])
-        # create/reset biosphere db dedicated to new flows (e.g. contrails)
-        _reset_db_and_proxy(
-            USER_BIOSPHERE_DB_NAME,
-            foreground=False,
-        )
+        # Existing custom methods and foreground models refer to these flow IDs.
+        _ensure_user_biosphere()
         if custom_methods:
             # implement new lcia methods
             _LOGGER.info(

@@ -162,6 +162,8 @@ class ForegroundBuilder:
         return definition.label if year is None else f"{definition.label} ({year})"
 
     def _metadata(self, activity, table):
+        # A declaration owns one set of group metadata. Any required
+        # year-specific inventory inherits that same set for axis reporting.
         metadata = {}
         for attribute in table.get("custom_attributes", []):
             metadata[attribute["attribute"]] = attribute["value"]
@@ -262,6 +264,11 @@ class ForegroundBuilder:
             result = self._build(referenced)
             if table.get("tags") or table.get("custom_attributes"):
                 if isinstance(result, PremiseBundle):
+                    if definition.scope is None:
+                        # Metadata belongs to this logical premise group.
+                        # Give the reference its own public wrapper, while
+                        # sharing the original year-specific inputs.
+                        return PremiseBundle(result.per_year.copy())
                     return PremiseBundle({
                         year: self._reference_wrapper(
                             self._resolve(result, referenced, year), definition, year,
@@ -459,8 +466,16 @@ class ForegroundBuilder:
         source = self._find_background(definition.table, year)
         modified = any(definition.table.get(k) for k in ("add", "update", "delete"))
         if not modified:
-            if definition.table.get("tags") or definition.table.get("custom_attributes"):
+            annotated = bool(
+                definition.table.get("tags")
+                or definition.table.get("custom_attributes")
+            )
+            if annotated and (year is None or definition.scope is not None):
+                # Internal same-year references bypass public interpolation.
+                # Their helpers inherit the logical group's metadata uniformly.
                 return self._reference_wrapper(source, definition, year)
+            # A public premise group already carries the metadata. Its
+            # interpolation can point directly to the background activities.
             return source
         original = self._inventory(source)
         inventory = self._edited_inventory(definition, year, self._inventory(source))
