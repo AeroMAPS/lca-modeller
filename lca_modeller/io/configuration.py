@@ -615,12 +615,8 @@ class LCAProblemConfigurator:
 
         if self.source_ei_name in bw2data.databases and not reset:
             _LOGGER.info(
-                "Ecoinvent database '%s' already available; skipping import.",
+                "Ecoinvent database '%s' already imported. To clear and re-import, use reset_project: True in configuration file.",
                 self.source_ei_name,
-            )
-
-            _LOGGER.info(
-                "Set reset_project: True in configuration file to rebuild the Brightway project."
             )
 
         else:  ### Import Ecoinvent DB
