@@ -161,9 +161,11 @@ class ForegroundBuilder:
     def _name(self, definition, year):
         return definition.label if year is None else f"{definition.label} ({year})"
 
-    def _metadata(self, activity, table):
-        # A declaration owns one set of group metadata. Any required
-        # year-specific inventory inherits that same set for axis reporting.
+    def _metadata(self, activity, table, year=None):
+        # Tags and custom attributes belong to the public logical group.
+        # Generated yearly inventories remain implementation details.
+        if year is not None:
+            return
         metadata = {}
         for attribute in table.get("custom_attributes", []):
             metadata[attribute["attribute"]] = attribute["value"]
@@ -175,7 +177,7 @@ class ForegroundBuilder:
     def _build_group(self, definition, year):
         table = definition.table
         activity = agb.newActivity(self.db, self._name(definition, year), table.get("unit"))
-        self._metadata(activity, table)
+        self._metadata(activity, table, year=year)
         self._fill_group(activity, definition, year)
         return activity
 
@@ -264,16 +266,9 @@ class ForegroundBuilder:
             result = self._build(referenced)
             if table.get("tags") or table.get("custom_attributes"):
                 if isinstance(result, PremiseBundle):
-                    if definition.scope is None:
-                        # Metadata belongs to this logical premise group.
-                        # Give the reference its own public wrapper, while
-                        # sharing the original year-specific inputs.
-                        return PremiseBundle(result.per_year.copy())
-                    return PremiseBundle({
-                        year: self._reference_wrapper(
-                            self._resolve(result, referenced, year), definition, year,
-                        ) for year in self.years
-                    })
+                    # The reference owns a tagged public group and shares the
+                    # original yearly inputs without creating yearly wrappers.
+                    return PremiseBundle(result.per_year.copy())
                 return self._reference_wrapper(result, definition, None)
             return result
         if table.get("categories"):
@@ -303,7 +298,7 @@ class ForegroundBuilder:
             self.db, self._name(definition, year), target.get("unit"),
             exchanges={target: 1},
         )
-        self._metadata(activity, definition.table)
+        self._metadata(activity, definition.table, year=year)
         return activity
 
     def _inventory(self, source):
@@ -470,9 +465,7 @@ class ForegroundBuilder:
                 definition.table.get("tags")
                 or definition.table.get("custom_attributes")
             )
-            if annotated and (year is None or definition.scope is not None):
-                # Internal same-year references bypass public interpolation.
-                # Their helpers inherit the logical group's metadata uniformly.
+            if annotated and year is None:
                 return self._reference_wrapper(source, definition, year)
             # A public premise group already carries the metadata. Its
             # interpolation can point directly to the background activities.
@@ -535,5 +528,5 @@ class ForegroundBuilder:
                 combined[key].amount += exchange.amount
             for exchange in combined.values():
                 self._write_exchange(activity, exchange, source)
-        self._metadata(activity, definition.table)
+        self._metadata(activity, definition.table, year=year)
         return activity
