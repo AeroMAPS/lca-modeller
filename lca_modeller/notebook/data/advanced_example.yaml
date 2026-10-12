@@ -28,6 +28,13 @@ premise:
         # - dac
 
 
+# LCA-Modeller settings to handle modification of background processes
+# (By default, LCA-Modeller copies modified background inventories into the foreground.
+# Use the following option to retain each original background activity and represent its modifications with correction exchanges.
+# This usually speeds up the compilation when large modifications are implemented.)
+# foreground_modifications: overlay
+
+
 # The LCA model
 model:
 
