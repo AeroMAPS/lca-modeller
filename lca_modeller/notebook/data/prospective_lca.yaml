@@ -21,7 +21,7 @@ premise:
           pathway: "SSP2-NPi"
           year: 2040
 
-    update: all  # all sectors (recommanded)
+    update: all  # all sectors (recommended)
         # Or a list of individual sectors to be updated
         # - electricity
         # - biomass

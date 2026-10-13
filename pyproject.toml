@@ -1,6 +1,6 @@
 [project]
 name = "lca-modeller"
-version = "0.1.4-beta"
+version = "0.1.5-beta"
 description = "Python library to build parametric LCA models from a configuration file."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -20,7 +20,7 @@ keywords = [
 ]
 
 dependencies = [
-    "lca-algebraic-bw25>=1.4.1,<2",
+    "lca-algebraic-bw25==1.4.2",
     "premise>=2.5.2,<3",
     "jupyterlab",
     "ruamel.yaml>=0.15,<0.19",
@@ -28,6 +28,7 @@ dependencies = [
     "eight>=1.0.1,<2",
     "matplotlib>=3.7,<4",
     "pyvis>=0.3.0,<0.4",
+    "pyarrow<26" # temporary fix related to premise and pyarrow versioning issue (https://github.com/polca/premise/commit/25609ce1ba626303276ef02f9e5eb1a1fb0e7136)
 ]
 
 [tool.uv]
@@ -42,10 +43,14 @@ required-environments = [
 constraint-dependencies = [
     # (from premise) llvmlite >=0.46 dropped Intel-macOS wheels
     "numba<0.63; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-
     # (from premise) cryptography >=49 dropped Intel-macOS wheels
     "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
+
+[tool.uv.sources]
+# temporary fix pending for latest lca-algebraic-bw25 release (1.4.2) on pypi
+lca-algebraic-bw25 = { git = "https://github.com/oie-mines-paristech/lca_algebraic.git", tag = "1.4.2-bw25" }
+
 
 [build-system]
 requires = [

@@ -14,10 +14,12 @@ normal
     LCA-Modeller progress information and warnings.
     lca-algebraic INFO messages are hidden.
     Known non-actionable lca-algebraic warnings are hidden.
+    Brightway's empty characterization-matrix warnings are hidden.
 
 verbose
     LCA-Modeller progress information and warnings.
     lca-algebraic INFO messages are shown, except known internal noise.
+    Brightway's empty characterization-matrix warnings are shown.
 
 debug
     Show all available diagnostic output, including normally hidden
@@ -27,6 +29,7 @@ debug
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Literal
 
 
@@ -304,6 +307,15 @@ def set_verbosity(level: Verbosity = "normal") -> None:
         )
 
     _CURRENT_VERBOSITY = level
+
+    # Python warnings bypass logger levels. Filter only Brightway's empty
+    # characterization-matrix diagnostic; keep unrelated warnings visible.
+    warnings.filterwarnings(
+        "ignore" if level in {"quiet", "normal"} else "default",
+        message=r"^All values in characterization matrix(?: for .+)? are zero$",
+        category=UserWarning,
+        module=r"^bw2calc\.(?:multi_lca|lca)$",
+    )
 
     # ------------------------------------------------------------------
     # LCA-Modeller

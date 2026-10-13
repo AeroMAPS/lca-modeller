@@ -198,6 +198,12 @@
     }
   },
   "properties": {
+    "foreground_modifications": {
+      "type": "string",
+      "enum": ["copy", "overlay"],
+      "default": "copy",
+      "description": "Create foreground copies or sparse inventory corrections for modified background activities."
+    },
     "project": {
       "type": "string"
     },
